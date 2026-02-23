@@ -3,6 +3,7 @@ import re
 import math
 from datetime import datetime
 import hashlib
+from collections import defaultdict
 
 from forja_headers import HEADERS_FORJA_INGESTA
 
@@ -12,6 +13,26 @@ from forja_headers import HEADERS_FORJA_INGESTA
 
 COL_IDX = {h: i for i, h in enumerate(HEADERS_FORJA_INGESTA)}
 
+# ==============================================================================
+#  DEFINICIÓN DE ÍNDICES PARA VALIDACIÓN
+# ==============================================================================
+try:
+    # Columnas a validar si están vacías
+    IDX_DX = HEADERS_FORJA_INGESTA.index("DX codigo")
+    IDX_NOMBRE = HEADERS_FORJA_INGESTA.index("Nombre de Medicamento")
+    IDX_CANT = HEADERS_FORJA_INGESTA.index("Cantidad")
+    IDX_POSOLOGIA = HEADERS_FORJA_INGESTA.index("Posología")
+    IDX_DIAS = HEADERS_FORJA_INGESTA.index("TiempoDeTratamiento en dias")
+
+    # Columna llave de agrupación
+    IDX_ADMISION = HEADERS_FORJA_INGESTA.index("Admision")
+
+    # Columna objetivo donde se escribirá el estado
+    IDX_ESTADO_ORDEN = HEADERS_FORJA_INGESTA.index("ESTADO_ORDEN")
+
+except ValueError as e:
+    raise RuntimeError(f"[FORJA CRITICAL] Falta columna requerida para validación en HEADERS: {e}")
+
 
 def _set_col(row, col_name, value):
     idx = COL_IDX.get(col_name)
@@ -20,6 +41,20 @@ def _set_col(row, col_name, value):
         raise ValueError(f"[FORJA] Columna inexistente en INGESTA: {col_name}")
 
     row[idx] = "" if value is None else str(value)
+
+
+def validar_campos_obligatorios_fila(fila: list) -> bool:
+    """
+    Revisa una fila individual. Devuelve True si FALTA algún dato obligatorio.
+    """
+    columnas_a_revisar = [IDX_DX, IDX_NOMBRE, IDX_CANT, IDX_POSOLOGIA, IDX_DIAS]
+
+    for idx in columnas_a_revisar:
+        valor = str(fila[idx]).strip()
+        if not valor:
+            return True # Faltan datos
+
+    return False # La fila está completa
 
 
 # ==============================
@@ -35,11 +70,10 @@ def construir_filas_forja(
     link_correo: str,
 ):
 
-    filas = []
+    filas_crudas_temporales = []
 
     globales = resultado_extractor.get("globales", {})
   
-
     tipo_doc = globales.get("tipo_doc", "")
     documento = globales.get("documento", "")
     nit = globales.get("nit_empresa", "")
@@ -48,13 +82,12 @@ def construir_filas_forja(
 
     formulas = resultado_extractor.get("formulas", [])
 
+    # -------------------------------------------------------
+    # PASO 1: CONSTRUCCIÓN INICIAL DE FILAS
+    # -------------------------------------------------------
     for idx_formula, formula in enumerate(formulas, start=1):
 
-        # FORMULA_ID estable
-        # base_formula = f"{documento}|{fecha_cita}|{nit}|{archivo_origen}|F{idx_formula}"
-        # formula_id = hashlib.sha256(base_formula.encode("utf-8")).hexdigest()[:16]
         formula_id = formula.get("formula_key", "")
-
         medicamentos = formula.get("medicamentos", [])
 
         for med in medicamentos:
@@ -112,21 +145,54 @@ def construir_filas_forja(
 
             _set_col(fila, "Admision", formula_id)
 
-            # _set_col(fila, "FORMULA_ID", formula_id)
-            # _set_col(fila, "MEDICAMENTO_ID", medicamento_id)
+            # El estado se deja vacío inicialmente
+            _set_col(fila, "ESTADO_ORDEN", "")
 
-# Expansión mensual externa — no altera header corporativo
-
-            # ---------- VALIDACIÓN FINAL ----------
+            # ---------- VALIDACIÓN ESTRUCTURAL ----------
 
             if len(fila) != len(HEADERS_FORJA_INGESTA):
                 raise RuntimeError(
                     f"[FORJA] Fila desalineada: {len(fila)} != {len(HEADERS_FORJA_INGESTA)}"
                 )
 
-            filas.append(fila)
+            filas_crudas_temporales.append(fila)
 
-    return filas
+    # -------------------------------------------------------
+    # PASO 2: POST-PROCESAMIENTO Y VALIDACIÓN GRUPAL
+    # -------------------------------------------------------
+
+    if not filas_crudas_temporales:
+        return []
+
+    formulas_agrupadas = defaultdict(list)
+    for fila in filas_crudas_temporales:
+        admision_key = fila[IDX_ADMISION]
+        formulas_agrupadas[admision_key].append(fila)
+
+    filas_finales_procesadas = []
+
+    for admision_key, grupo_filas in formulas_agrupadas.items():
+
+        formula_completa_tiene_error = False
+
+        # Revisar si ALGUNA fila del grupo tiene campos vacíos
+        for fila in grupo_filas:
+            if validar_campos_obligatorios_fila(fila):
+                formula_completa_tiene_error = True
+                break
+
+        estado_final_grupo = "🔴 FORMULA CON ERROR" if formula_completa_tiene_error else "✅ OK"
+
+        # Colocar estado SOLO en la primera fila de la fórmula (para visualización limpia)
+        for indice, fila in enumerate(grupo_filas):
+            if indice == 0:
+                fila[IDX_ESTADO_ORDEN] = estado_final_grupo
+            else:
+                fila[IDX_ESTADO_ORDEN] = ""
+                
+            filas_finales_procesadas.append(fila)
+
+    return filas_finales_procesadas
 
 import re
 import math

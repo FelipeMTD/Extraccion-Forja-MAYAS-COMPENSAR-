@@ -13,7 +13,8 @@ from gmail_reader import buscar_mensajes, obtener_adjuntos
 from zip_handler import extraer_pdfs
 from date_picker import seleccionar_rango_fechas
 from drive_storage import guardar_pdf_en_drive
-from sheets_writer import asegurar_headers, append_filas
+# -- MODIFICADO: Agregamos fusionar_celdas_estado --
+from sheets_writer import asegurar_headers, append_filas, fusionar_celdas_estado
 from forja_row_mapper import construir_filas_forja
 from forja_extraccion_pdfs import procesar_pdf
 from gmail_labels import obtener_o_crear_label, aplicar_etiqueta
@@ -378,17 +379,34 @@ if __name__ == "__main__":
             print("  ✖ Correo NO apto para etiquetar (ningún PDF válido)")
 
         # ===============================
-        # ESCRITURA BATCH (ahorro cuota)
+        # ESCRITURA BATCH (ahorro cuota) + MERGE
         # ===============================
 
+    # Necesitamos los índices para saber qué columna agrupar y cuál fusionar
+    idx_admision = HEADERS_FORJA.index("Admision")
+    idx_estado = HEADERS_FORJA.index("ESTADO_ORDEN")
+
     if todas_filas_nuevas_base_general:
-            append_filas(
+            # Capturar el rango de respuesta
+            rango_base = append_filas(
                 sheets,
                 SPREADSHEET_ID_FORJA,
                 SHEET_BASE_GENERAL,
                 todas_filas_nuevas_base_general,
             )
             print(f"\n[FORJA] ✔ BASE_GENERAL_FORJA: {len(todas_filas_nuevas_base_general)} filas nuevas añadidas")
+
+            # Ejecutar fusión de celdas
+            if rango_base:
+                fusionar_celdas_estado(
+                    sheets,
+                    SPREADSHEET_ID_FORJA,
+                    SHEET_BASE_GENERAL,
+                    rango_base,
+                    todas_filas_nuevas_base_general,
+                    idx_admision,
+                    idx_estado
+                )
     else:
             print("\n[FORJA] ℹ BASE_GENERAL_FORJA: no hay filas nuevas")
 
@@ -404,15 +422,27 @@ if __name__ == "__main__":
                 )
                 HOJAS_EXISTENTES.add(hoja)
 
-            # Append batch por hoja
+            # Append batch por hoja y FUSIÓN
             for hoja, filas_mes in por_hoja_mensual.items():
                 if filas_mes:
-                    append_filas(
+                    rango_mes = append_filas(
                         sheets,
                         SPREADSHEET_ID_FORJA,
                         hoja,
                         filas_mes,
                     )
+                    
+                    if rango_mes:
+                        fusionar_celdas_estado(
+                            sheets,
+                            SPREADSHEET_ID_FORJA,
+                            hoja,
+                            rango_mes,
+                            filas_mes,
+                            idx_admision,
+                            idx_estado
+                        )
+
             print(f"[FORJA] ✔ Hojas mensuales actualizadas: {len(por_hoja_mensual)} hojas")
     else:
             print("[FORJA] ℹ No hay filas nuevas para hojas mensuales")
